@@ -32,7 +32,9 @@ Alpaca auto-trading is out of scope (later, once phase 4 has a track record).
 
 ## Hypotheses (pre-registered — this list is fixed before any run)
 
-All swing hypotheses enter at the close on signal day and exit at the close after the hold.
+**Execution model (matches the 8:45 AM email + a manual Fidelity trade):** buy at the **open** of the entry day and sell at the **open** `hold` trading days later. Data-driven signals use bars up to the prior close; calendar signals (dates known in advance) enter at the open of the special day. No overlapping positions in the same symbol. Price-digit signals (T3, N4) use **true traded prices** (split-unadjusted, no dividend adjustment); returns use adjusted prices.
+
+**Attribution control:** where a 3-6-9 / numerology rule has a natural non-magic twin (e.g. streaks of 4/5/7/8, levels with other digit roots), the twin is reported alongside, so we can tell whether 3-6-9 itself matters or the underlying pattern does. Pass/fail is decided on the money question (vs random), the twin is for interpretation.
 
 **Tesla group**
 - **T1 · 3-6-9 days:** the day of the month's digit root is 3, 6 or 9. Hold 1 day.
@@ -64,9 +66,9 @@ All swing hypotheses enter at the close on signal day and exit at the close afte
 ## Pass criteria (all required)
 
 1. **Holdout locked.** Discovery uses data through 2023-10-31. 2023-11-01 → today is touched once, at the end.
-2. **Net of costs:** 5 bp round trip on stocks, 2 bp on ETFs.
-3. **Luck test:** permutation p-value against C1 (1,000 shuffles), pooled across the universe, is below **0.05 / number of hypotheses** (Bonferroni; about 0.003 for 15 tests).
-4. **Walk-forward:** positive in a majority of the 5-year-train / 2-year-test folds.
+2. **Net of costs:** 5 bp round trip on stocks, 2 bp on ETFs, and the average net return per trade must be > 0.
+3. **Luck test:** excess = trade net return − that symbol's average return over any window of the same length. p-value from **2,000 random calendar shifts** (all symbols' trade dates slid by the same random offset, preserving "stocks move together"). Must be below **0.05 / 16 = 0.0031** (Bonferroni: 12 swing + 4 intraday tests).
+4. **Consistency:** rules have no fitted parameters, so walk-forward reduces to: positive excess in a majority of the 2-year blocks of the discovery period.
 5. **Holdout:** same sign and at least half the discovery-period effect size.
 6. **Beats VOO risk-adjusted:** as a $1K portfolio, its Sharpe beats C0 over the same period.
 
