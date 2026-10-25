@@ -76,8 +76,17 @@ def main() -> int:
     ap.add_argument("--unlock-holdout", action="store_true")
     ap.add_argument("--only", help="comma-separated hypothesis codes")
     ap.add_argument("--symbols", help="comma-separated symbols (smoke tests)")
+    ap.add_argument("--bugfix-rerun", metavar="REASON",
+                    help="re-score an already-opened holdout after a bug fix that changes no signal")
     args = ap.parse_args()
-    if args.unlock_holdout and LOCK.exists():
+    if args.bugfix_rerun:
+        if not LOCK.exists():
+            print("--bugfix-rerun only applies after the holdout has been opened.")
+            return 1
+        with LOCK.open("a") as f:
+            f.write(f"\nbugfix rerun {datetime.now().isoformat(timespec='seconds')}: {args.bugfix_rerun}")
+        args.unlock_holdout = True
+    elif args.unlock_holdout and LOCK.exists():
         print(f"Holdout was already unlocked on {LOCK.read_text().strip()}. It is used once.")
         return 1
 
@@ -147,7 +156,7 @@ def main() -> int:
     stamp = "holdout" if args.unlock_holdout else "discovery"
     board.to_csv(RESULTS / f"scoreboard_{stamp}.csv", index=False)
     (RESULTS / f"report_{stamp}.md").write_text(report(board, stamp))
-    if args.unlock_holdout and not args.symbols and not args.only:
+    if args.unlock_holdout and not args.bugfix_rerun and not args.symbols and not args.only:
         LOCK.write_text(datetime.now().isoformat(timespec="seconds"))
     cols = ["code", "hypothesis", "trades_per_yr", "avg_net_pct", "excess_bp", "luck_p",
             "consistency_pct", "lab_sharpe", "voo_sharpe", "status"]

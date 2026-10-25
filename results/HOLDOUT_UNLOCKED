@@ -1,0 +1,2 @@
+2026-10-25T16:38:58
+bugfix rerun 2026-10-25T16:40:07: portfolio slot-shrink bug: losing trades permanently shrank slots; signals unchanged

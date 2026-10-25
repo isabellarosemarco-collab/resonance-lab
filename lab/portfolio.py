@@ -12,7 +12,8 @@ def simulate(dates: pd.DatetimeIndex, open_: np.ndarray, close: np.ndarray, cost
              capital: float = SLOT_SIZE * SLOTS) -> pd.Series:
     """Daily closing equity. Signals beyond 4 open slots are skipped (first come, by symbol order).
 
-    Cash earns nothing and slots don't compound, so this is a conservative view of the strategy.
+    Each new position gets a quarter of current equity (what Bella would do by hand), so slots
+    compound and a losing trade doesn't permanently shrink a slot. Cash earns nothing.
     """
     order = np.lexsort((sym, pos))
     sym, pos, hold = sym[order], pos[order], hold[order]
@@ -28,18 +29,23 @@ def simulate(dates: pd.DatetimeIndex, open_: np.ndarray, close: np.ndarray, cost
         for s, sh, ex in open_pos:        # exits first, at today's open
             px = open_[s, t]
             if t >= ex and np.isfinite(px):
-                cash += sh * px - SLOT_SIZE * cost[s]
+                cash += sh * px * (1 - cost[s])
                 held.discard(s)
             else:
                 still.append((s, sh, ex))
         open_pos = still
-        for i in by_day.get(t, []):
+        todays = by_day.get(t, [])
+        if todays:
+            at_open = cash + sum(sh * open_[s, t] for s, sh, _ in open_pos if np.isfinite(open_[s, t]))
+            size = at_open / SLOTS
+        for i in todays:
             s = int(sym[i])
             px = open_[s, t]
-            if len(open_pos) < SLOTS and s not in held and np.isfinite(px) and cash >= SLOT_SIZE:
-                open_pos.append((s, SLOT_SIZE / px, t + int(hold[i])))
+            if len(open_pos) < SLOTS and s not in held and np.isfinite(px) and cash > 1.0:
+                spend = min(size, cash)
+                open_pos.append((s, spend / px, t + int(hold[i])))
                 held.add(s)
-                cash -= SLOT_SIZE
+                cash -= spend
         marks = [sh * (close[s, t] if np.isfinite(close[s, t]) else open_[s, t]) for s, sh, _ in open_pos]
         eq[t] = cash + float(np.nansum(marks))
     return pd.Series(eq, index=dates)
