@@ -129,6 +129,12 @@ def t7_oscillation(df: pd.DataFrame, n: int = 9) -> Signal:
     return Signal(trades)
 
 
+def t4b_streak_3plus(df: pd.DataFrame) -> Signal:
+    """POST-HOC (added 2026-10-25 after seeing T4's breakdown, before the holdout was opened)."""
+    s = down_streak(df["close"].to_numpy())
+    return Signal(after_close(s >= 3, 3))
+
+
 # ------------------------------------------------------------------ numerology / personal
 
 def n1_date_root(df: pd.DataFrame) -> Signal:
@@ -199,6 +205,7 @@ HYPOTHESES: list[Hypothesis] = [
     Hypothesis("T2", "3-6-9 holds", t2_369_holds, per_day=True),
     Hypothesis("T3", "3-6-9 price levels", t3_369_levels),
     Hypothesis("T4", "3-6-9 streaks", t4_369_streaks),
+    Hypothesis("T4b", "Losing streak 3+ (post-hoc)", t4b_streak_3plus),
     Hypothesis("T5", "Frequency (dominant cycle)", t5_frequency),
     Hypothesis("T6", "Resonance (3/6/9 cycles align)", t6_resonance),
     Hypothesis("T7", "Oscillation (snap-back)", t7_oscillation),

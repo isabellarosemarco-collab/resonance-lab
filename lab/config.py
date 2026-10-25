@@ -23,7 +23,7 @@ def cost_bp(symbol: str) -> float:
     return 2.0 if symbol in ETFS else 5.0
 
 
-N_TESTS = 16                        # 12 swing + 4 intraday, pre-registered
+N_TESTS = 17                        # 12 swing + 4 intraday pre-registered, +1 post-hoc (T4b)
 BAR = 0.05 / N_TESTS                # Bonferroni significance bar
 N_SHIFTS = 2000                     # random calendar shifts for the luck test
 MIN_SHIFT = 30                      # bars; keeps a shift from landing back on the real dates
