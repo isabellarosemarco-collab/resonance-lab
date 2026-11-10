@@ -25,6 +25,17 @@ To count as an edge, a signal has to beat random trades and buy-and-hold VOO aft
 
 Next: trading the surviving signal with a real $1,000.
 
+## Round 2: the Edge Lab
+
+After the mystical ideas, I tested six well-known market effects the same way: momentum, sector rotation, the turn of the month, overnight returns, a 200-day trend filter, and post-earnings drift. Code: [`edge_lab.py`](edge_lab.py), [`edge_lab2.py`](edge_lab2.py). Results: [`results/edge_lab_report.md`](results/edge_lab_report.md).
+
+- **Most "edges" were hindsight.** Momentum and buying gap-ups looked amazing on today's megacaps, but on former giants that lagged, gap-ups made 1.3% a year against 6.9% for just holding them.
+- **Turn of the month and overnight returns failed** after trading costs.
+- **Trend and sector rotation didn't make more money, but they cut the worst crash from -55% to about -20% to -30%.**
+- **One effect held up: post-earnings drift.** Across 5,277 real earnings reports (2002-2026), stocks with the biggest earnings beats kept outperforming the biggest misses on the same stocks by about 2.7% over the next three months (t 3.9), after skipping the first-day jump. It held on the laggards too, smaller (+1.5%). In the last three years it was still positive but too small a sample to confirm.
+
+Next: paper-trading post-earnings drift and the losing-streak bounce side by side.
+
 ## Run it
 
 ```bash
