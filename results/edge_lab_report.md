@@ -45,3 +45,17 @@ The two signals that survived every test now run side by side on an Alpaca paper
 - **PEAD:** a top-20% EPS surprise (vs the trailing-year cutoff): buy at the close of the first reaction day, hold 60 trading days. Up to 10 positions of $500.
 
 It runs twice a trading day (after the open and near the close) and writes a daily summary. AMZN is excluded. The base URL is hard-wired to the paper endpoint.
+
+# S&P 500 holdout (`sp500_lab.py`, pre-registered in `docs/prereg/2026-11-11-sp500-holdout.md`)
+482 of the 503 S&P 500 members on 2023-11-01 (21 later acquired or renamed couldn't be priced), Nov 2023 to Nov 2026. Rules unchanged. Bar: p < 0.0125.
+
+| Test | Trades | Avg excess | t | Luck p | 2024 / 2025 / 2026 | Result |
+|---|---|---|---|---|---|---|
+| T4b losing streak 3+ | 37,418 | +0.05% | -0.40 | 0.17 | -0.11% / +0.20% / +0.00% | FAIL |
+| T7 snap-back | 9,043 | +0.39% | 1.29 | 0.044 | +0.08% / +0.96% / -0.04% | FAIL |
+| T6 cycles align | 839 | -0.23% | -0.73 | 0.88 | +0.20% / -0.27% / -0.63% | FAIL |
+| PEAD top minus bottom quintile | 2,157 | +2.00% | 2.94 (p 0.0017) | | +0.96% / +2.96% / +2.56% | **PASS** |
+
+- **Post-earnings drift is confirmed out of sample.** Beats beat misses by 2.0% over 60 days, positive every year, and the quintiles line up in order (-2.65%, -2.43%, -1.20%, -0.51%, -0.65% vs SPY).
+- **But most of the edge is in avoiding the misses.** Long-only, the top quintile still trailed SPY (-0.65%), because SPY was driven by a few megacaps. It beat the average S&P stock in the sample by about 0.8%.
+- **T4 did not generalize.** On 9x more stocks over the same three years it was flat. Its edge looks specific to the 60 megacaps it was found on.
