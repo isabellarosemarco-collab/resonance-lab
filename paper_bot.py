@@ -2,16 +2,19 @@
 
   T4    losing-streak bounce : a stock closes down 3+ days in a row -> buy at the next open,
                                sell after 3 trading days.                       (Resonance Lab)
-  PEAD  post-earnings drift  : top-20% EPS surprise (vs trailing-year cutoff) -> buy at the close
-                               of the first reaction day, sell after 60 trading days. (Edge Lab)
+  PEAD  post-earnings drift  : S&P 500. Top-20% EPS surprise (vs trailing-year cutoff) -> buy at the
+                               close of the first reaction day; bottom-20% surprise -> SHORT it.
+                               Close either after 60 trading days. (Edge Lab; confirmed on the
+                               S&P 500 holdout 2023-26: top minus bottom +2.0% per 60 days, t 2.94)
 
 Runs twice a trading day (launchd):
-  python paper_bot.py open    ~9:35 ET  : sell expired T4 positions, buy new T4 signals
-  python paper_bot.py close   ~15:50 ET : sell expired PEAD positions, buy today's earnings beats,
-                                          write the daily summary
+  python paper_bot.py open    ~9:35 ET  : sell expired T4 positions, buy new T4 signals, and scan the
+                                          S&P 500 for today's earnings reactions (cached for the close)
+  python paper_bot.py close   ~15:50 ET : close expired PEAD positions, buy today's big beats and
+                                          short today's big misses, write the daily summary
 Add --dry to print what it would do without placing orders.
 
-Sizing mimics a small real account: LAB budget $10,000; T4 4 slots x $500, PEAD 10 slots x $500.
+Sizing: T4 4 slots x $500; PEAD 30 long + 30 short slots x $500 (biggest surprises first).
 AMZN is excluded (Amazon employee trading rules). Keys come from ~/.alpaca/paper.env and the
 base URL is hard-wired to the PAPER endpoint, so this cannot touch a live account.
 """
@@ -35,8 +38,10 @@ LOG = os.path.join(HERE, "paper", "trades.csv")
 SUMMARY_DIR = os.path.join(HERE, "paper", "daily")
 
 UNIVERSE = [s for s in ETFS + STOCKS if s != "AMZN"]
-PEAD_UNIVERSE = [s for s in STOCKS if s != "AMZN"]
-T4_SLOTS, PEAD_SLOTS, SLOT_USD = 4, 10, 500.0
+PEAD_UNIVERSE = open(os.path.join(HERE, "data_cache/sp500_current.txt")).read().split()   # AMZN excluded
+T4_SLOTS, PEAD_SLOTS, SLOT_USD = 4, 30, 500.0
+SCAN = os.path.join(HERE, "paper", "pead_scan.json")
+LOCK = os.path.join(HERE, "paper", ".lock")
 T4_STREAK, T4_HOLD, PEAD_HOLD, PEAD_PCTL = 3, 3, 60, 0.80
 
 
@@ -78,6 +83,33 @@ def buy_notional(sym: str, usd: float, dry: bool):
                                            "type": "market", "time_in_force": "day"})
 
 
+def short_qty(sym: str, usd: float, dry: bool):
+    """Short whole shares worth about `usd` (Alpaca can't short fractional/notional). None if not shortable."""
+    a = api("GET", f"/v2/assets/{sym}")
+    if not (a.get("shortable") and a.get("easy_to_borrow")):
+        return None
+    q = yf.Ticker(sym).fast_info.get("lastPrice") or 0
+    n = int(usd // q) if q else 0
+    if n < 1:
+        return None
+    if dry:
+        return {"id": "DRY", "symbol": sym, "qty": n}
+    o = api("POST", "/v2/orders", json={"symbol": sym, "qty": str(n), "side": "sell", "type": "market", "time_in_force": "day"})
+    o["qty"] = n
+    return o
+
+
+def cover_qty(sym: str, qty: float, dry: bool):
+    if dry or qty <= 0:
+        return {"id": "DRY", "symbol": sym}
+    pos = {p["symbol"]: float(p["qty"]) for p in api("GET", "/v2/positions")}
+    q = min(qty, -pos.get(sym, 0.0))
+    if q <= 0:
+        return {"id": "NONE", "symbol": sym}
+    return api("POST", "/v2/orders", json={"symbol": sym, "qty": str(int(q)), "side": "buy",
+                                           "type": "market", "time_in_force": "day"})
+
+
 def sell_qty(sym: str, qty: float, dry: bool):
     if dry or qty <= 0:
         return {"id": "DRY", "symbol": sym}
@@ -99,8 +131,10 @@ def filled_qty(order_id: str) -> float:
 # ---------- state & logging ----------
 def load_state() -> dict:
     if os.path.exists(STATE):
-        return json.load(open(STATE))
-    return {"t4": [], "pead": [], "pending": []}
+        st = json.load(open(STATE))
+        st.setdefault("pead_short", [])
+        return st
+    return {"t4": [], "pead": [], "pead_short": [], "pending": []}
 
 
 def save_state(st: dict):
@@ -118,7 +152,7 @@ def settle_pending(st: dict):
     """Record filled quantities for buys placed on the previous run."""
     still = []
     for p in st.get("pending", []):
-        q = filled_qty(p["order_id"])
+        q = abs(filled_qty(p["order_id"]))
         if q > 0:
             st[p["strategy"]].append({"symbol": p["symbol"], "entry": p["entry"], "qty": q, "usd": p["usd"]})
         elif p.get("tries", 0) < 3:
@@ -148,18 +182,25 @@ def t4_signals(today: date) -> list[str]:
     return [s for _, s in sorted(out, reverse=True)]         # longest streaks first
 
 
-def pead_cutoff() -> float:
-    e = pd.read_parquet(os.path.join(HERE, "data_cache/edge2/earnings.parquet")).dropna(subset=["surprise_pct"])
+def pead_cutoffs() -> tuple[float, float]:
+    """20th / 80th percentile EPS surprise over the trailing year of S&P 500 reports (known today)."""
+    import glob
+    fs = glob.glob(os.path.join(HERE, "data_cache/sp500/*.earn.parquet"))
+    e = pd.concat([pd.read_parquet(f) for f in fs]).dropna(subset=["surprise_pct"])
+    scan = json.load(open(SCAN)) if os.path.exists(SCAN) else {}
+    extra = [r for d in scan.get("history", {}).values() for r in d]
+    if extra:
+        e = pd.concat([e, pd.DataFrame(extra)])
     ts = pd.to_datetime(e["date"], utc=True)
     recent = e[ts >= ts.max() - pd.Timedelta(days=365)]
-    return float(recent["surprise_pct"].quantile(PEAD_PCTL))
+    return float(recent["surprise_pct"].quantile(1 - PEAD_PCTL)), float(recent["surprise_pct"].quantile(PEAD_PCTL))
 
 
-def pead_signals(today: date) -> list[tuple[str, float]]:
-    """Stocks whose first reaction day to an earnings report is TODAY, with surprise >= cutoff."""
-    cut = pead_cutoff()
+def pead_scan(today: date) -> list[dict]:
+    """Every S&P 500 stock whose first reaction day to an earnings report is TODAY: reports before
+    today's open, or after yesterday's close. Known by the open, so it runs in the open job."""
+    prev = trading_days(today - timedelta(days=7), today)[-2]
     out = []
-    prev = trading_days(today - timedelta(days=7), today)[-2]   # previous trading day
     for s in PEAD_UNIVERSE:
         try:
             e = yf.Ticker(s).get_earnings_dates(limit=4)
@@ -172,12 +213,21 @@ def pead_signals(today: date) -> list[tuple[str, float]]:
             if pd.isna(sp):
                 continue
             t = pd.Timestamp(ts).tz_convert("America/New_York")
-            react = t.date() if t.hour < 16 else None
-            if t.hour >= 16 and t.date().isoformat() == prev:
-                react = today
-            if react == today and sp >= cut:
-                out.append((s, float(sp)))
-    return sorted(out, key=lambda x: -x[1])
+            if (t.hour < 16 and t.date() == today) or (t.hour >= 16 and t.date().isoformat() == prev):
+                out.append({"symbol": s, "surprise_pct": float(sp), "date": t.isoformat()})
+    return out
+
+
+def pead_signals(today: date) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """(longs, shorts) for today from the open-run scan: top-20% beats, bottom-20% misses."""
+    scan = json.load(open(SCAN)) if os.path.exists(SCAN) else {}
+    rows = scan.get("history", {}).get(today.isoformat())
+    if rows is None:                                      # open scan didn't run; scan now
+        rows = pead_scan(today)
+    lo, hi = pead_cutoffs()
+    longs = sorted([(r["symbol"], r["surprise_pct"]) for r in rows if r["surprise_pct"] >= hi], key=lambda x: -x[1])
+    shorts = sorted([(r["symbol"], r["surprise_pct"]) for r in rows if r["surprise_pct"] <= lo], key=lambda x: x[1])
+    return longs, shorts
 
 
 # ---------- runs ----------
@@ -202,6 +252,15 @@ def run_open(dry: bool) -> list[str]:
         log_trade({"time": datetime.now().isoformat(timespec="seconds"), "strategy": "T4", "side": "buy",
                    "symbol": s, "usd": SLOT_USD, "order": o.get("id")})
         notes.append(f"T4 buy {s} ${SLOT_USD:.0f} (3+ down days)")
+    try:
+        rows = pead_scan(today)
+        scan = json.load(open(SCAN)) if os.path.exists(SCAN) else {"history": {}}
+        scan.setdefault("history", {})[today.isoformat()] = rows
+        if not dry:
+            json.dump(scan, open(SCAN, "w"))
+        notes.append(f"earnings scan: {len(rows)} reporting today")
+    except Exception as ex:
+        notes.append(f"earnings scan failed ({str(ex)[:60]}); close run will retry")
     if not dry:
         save_state(st)
     return notes
@@ -220,14 +279,41 @@ def run_close(dry: bool, allow_buys: bool = True) -> list[str]:
         else:
             keep.append(p)
     st["pead"] = keep
+    keep = []
+    for p in st["pead_short"]:
+        if days_held(p["entry"], today) >= PEAD_HOLD:
+            o = cover_qty(p["symbol"], p["qty"], dry)
+            log_trade({"time": datetime.now().isoformat(timespec="seconds"), "strategy": "PEAD_SHORT", "side": "cover",
+                       "symbol": p["symbol"], "qty": p["qty"], "order": o.get("id")})
+            notes.append(f"PEAD cover short {p['symbol']} (held {PEAD_HOLD} days)")
+        else:
+            keep.append(p)
+    st["pead_short"] = keep
+    longs, shorts = pead_signals(today) if allow_buys else ([], [])
+    held = {p["symbol"] for p in st["pead"] + st["pead_short"]}
     open_slots = PEAD_SLOTS - len(st["pead"]) - sum(1 for p in st["pending"] if p["strategy"] == "pead")
-    held = {p["symbol"] for p in st["pead"]}
-    for s, sp in ([x for x in pead_signals(today) if x[0] not in held][:max(open_slots, 0)] if allow_buys else []):
+    for s, sp in [x for x in longs if x[0] not in held][:max(open_slots, 0)]:
         o = buy_notional(s, SLOT_USD, dry)
         st["pending"].append({"strategy": "pead", "symbol": s, "entry": today.isoformat(), "usd": SLOT_USD, "order_id": o.get("id")})
         log_trade({"time": datetime.now().isoformat(timespec="seconds"), "strategy": "PEAD", "side": "buy",
                    "symbol": s, "usd": SLOT_USD, "surprise_pct": sp, "order": o.get("id")})
         notes.append(f"PEAD buy {s} ${SLOT_USD:.0f} (EPS surprise {sp:+.1f}%)")
+    short_slots = PEAD_SLOTS - len(st["pead_short"]) - sum(1 for p in st["pending"] if p["strategy"] == "pead_short")
+    n = 0
+    for s, sp in [x for x in shorts if x[0] not in held]:
+        if n >= max(short_slots, 0):
+            break
+        try:
+            o = short_qty(s, SLOT_USD, dry)
+        except Exception as ex:
+            o = None; notes.append(f"PEAD short {s} failed ({str(ex)[:50]})")
+        if not o:
+            continue
+        n += 1
+        st["pending"].append({"strategy": "pead_short", "symbol": s, "entry": today.isoformat(), "usd": SLOT_USD, "order_id": o.get("id")})
+        log_trade({"time": datetime.now().isoformat(timespec="seconds"), "strategy": "PEAD_SHORT", "side": "short",
+                   "symbol": s, "qty": o.get("qty"), "surprise_pct": sp, "order": o.get("id")})
+        notes.append(f"PEAD short {s} {o.get('qty')} sh (EPS surprise {sp:+.1f}%)")
     if not dry:
         save_state(st)
         write_summary(st, notes)
@@ -240,7 +326,7 @@ def write_summary(st: dict, notes: list[str]):
     upl = sum(float(p["unrealized_pl"]) for p in positions)
     lines = [f"Paper trading bot: daily summary for {date.today():%a %b %d, %Y}", "",
              "Today: " + ("; ".join(notes) if notes else "no trades"), "",
-             f"Open positions: T4 {len(st['t4'])}/{T4_SLOTS}, earnings drift {len(st['pead'])}/{PEAD_SLOTS}",
+             f"Open positions: T4 {len(st['t4'])}/{T4_SLOTS}, earnings drift long {len(st['pead'])}/{PEAD_SLOTS}, short {len(st['pead_short'])}/{PEAD_SLOTS}",
              f"Unrealized P/L on open positions: ${upl:,.2f}",
              f"Paper account equity: ${float(acct['equity']):,.2f} (started at $100,000)", ""]
     for p in positions:
@@ -259,6 +345,16 @@ def auto(dry: bool) -> str:
     close : in the last 12 minutes of the session; if the close was missed entirely, a late run
             still sells expired positions and writes the summary but skips new earnings buys."""
     today = date.today()
+    if os.path.exists(LOCK) and (datetime.now().timestamp() - os.path.getmtime(LOCK)) < 1800:
+        return ""                                          # a previous run (e.g. the 500-stock scan) is still going
+    open(LOCK, "w").write(str(os.getpid()))
+    try:
+        return _auto(dry, today)
+    finally:
+        os.remove(LOCK)
+
+
+def _auto(dry: bool, today: date) -> str:
     if not is_trading_day(today):
         return ""
     runs = json.load(open(RUNS)) if os.path.exists(RUNS) else {}
